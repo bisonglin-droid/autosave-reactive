@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoSave — Reactive Omni Buildathon (Set It and Forget It)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #111; }
+  code { background: #f2f2f2; padding: 0 .3em; border-radius: 4px; }
+  .loop { border: 1px solid #999; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+  .loop div { margin: .35rem 0; }
+  button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer; }
+  #status { white-space: pre-wrap; background: #f7f7f7; padding: .8rem; border-radius: 6px; }
+  .muted { color: #555; font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>AutoSave — set it and forget it</h1>
+<p>A personal auto-save rule that lives on-chain. Deposit test ETH into the
+DepositBox on <strong>Unichain Sepolia</strong>; a reactive contract on
+<strong>Reactive Lasna</strong> sees the event and, when the deposit is at or
+above the threshold, triggers a callback that records the auto-save on the
+SavingsBoard. No bot, no server, no polling.</p>
+
+<div class="loop">
+  <div>① <strong>DepositBox</strong> (Unichain Sepolia, 1301) — you deposit → <code>Deposit</code> event</div>
+  <div>② <strong>AutoSaveReactive</strong> (Reactive Lasna, 5318007) — subscribes, <code>react()</code> checks threshold</div>
+  <div>③ <strong>SavingsBoard</strong> (Unichain Sepolia, 1301) — callback <code>onDeposit()</code> records the save</div>
+</div>
+
+<h2>Deployed contracts</h2>
+<p class="muted">Fill in from <code>deployments.json</code> after running
+<code>node scripts/deploy.js</code>. Until then the demo below is disabled.</p>
+<ul>
+  <li>DepositBox: <code id="boxAddr">— not deployed yet —</code></li>
+  <li>AutoSaveReactive: <code id="reactiveAddr">— not deployed yet —</code></li>
+  <li>SavingsBoard: <code id="boardAddr">— not deployed yet —</code></li>
+  <li>Threshold: <code id="threshold">0.01 ETH</code></li>
+</ul>
+
+<h2>Try it (needs MetaMask on Unichain Sepolia)</h2>
+<p><button id="depositBtn">Deposit 0.05 test ETH</button>
+<button id="refreshBtn">Refresh loop status</button></p>
+<pre id="status">Status: not deployed yet. Run the deploy script first, then paste the
+addresses above (edit the DEPLOYED object at the top of this file's script).</pre>
+
+<p class="muted">Track: Set It and Forget It · Reactive Omni Buildathon · DoraHacks ·
+Prize pool $5,500 paid in REACT · Deadline Dec 5, 2026 20:00 UTC.
+Source code, deploy scripts and docs live next to this page in the project repo.</p>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script>
+// >>> Fill these from deployments.json after deploying. <<<
+// Deployed 2026-11-25 (attempt 5); loop verified closed 00:53.
+const DEPLOYED = {
+  box: "0x8D1414a4Bd3edFFB1255e63a5da60306309CE535",
+  reactive: "0xf809473498EE1c66f5BD7f91cc36B09faE36E2e3",
+  board: "0x4d6BeFd50076c8eb2A26B74Be2ba0359238819E7",
+};
+const THRESHOLD_ETH = "0.01";
+const DEPOSIT_ETH = "0.05";
+const BOX_ABI = ["function deposit() payable", "function balances(address) view returns (uint256)"];
+const BOARD_ABI = [
+  "function totalSaved(address) view returns (uint256)",
+  "function saveCount(address) view returns (uint256)",
+  "function totalCallbacks() view returns (uint256)",
+  "function totalAutoSaved() view returns (uint256)"
+];
+const REACTIVE_ABI = [
+  "function reactions() view returns (uint256)",
+  "function callbacksRequested() view returns (uint256)"
+];
+const $ = (id) => document.getElementById(id);
+if (DEPLOYED.box) $("boxAddr").textContent = DEPLOYED.box;
+if (DEPLOYED.reactive) $("reactiveAddr").textContent = DEPLOYED.reactive;
+if (DEPLOYED.board) $("boardAddr").textContent = DEPLOYED.board;
+$("threshold").textContent = THRESHOLD_ETH + " ETH";
+
+async function refresh() {
+  if (!DEPLOYED.box) { $("status").textContent = "Status: not deployed yet."; return; }
+  try {
+    const uni = new ethers.JsonRpcProvider("https://sepolia.unichain.org");
+    const lasna = new ethers.JsonRpcProvider("https://lasna-rpc.rnk.dev/");
+    const board = new ethers.Contract(DEPLOYED.board, BOARD_ABI, uni);
+    const reactive = new ethers.Contract(DEPLOYED.reactive, REACTIVE_ABI, lasna);
+    const [reactions, callbacks, totalCb, totalSaved] = await Promise.all([
+      reactive.reactions(), reactive.callbacksRequested(),
+      board.totalCallbacks(), board.totalAutoSaved()
+    ]);
+    $("status").textContent =
+      `Reactions seen on Lasna: ${reactions}\nCallbacks requested: ${callbacks}\n` +
+      `Callbacks landed on board: ${totalCb}\nTotal auto-saved: ${ethers.formatEther(totalSaved)} ETH\n` +
+      (Number(totalCb) > 0 ? "LOOP CLOSED ✔" : "Loop not closed yet — wait a minute and refresh.");
+  } catch (e) { $("status").textContent = "Refresh failed: " + e.message; }
+}
+$("refreshBtn").onclick = refresh;
+
+$("depositBtn").onclick = async () => {
+  if (!DEPLOYED.box) { $("status").textContent = "Status: not deployed yet."; return; }
+  try {
+    if (!window.ethereum) throw new Error("MetaMask not found.");
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const signer = await provider.getSigner();
+    const net = await provider.getNetwork();
+    if (net.chainId !== 1301n) throw new Error("Switch MetaMask to Unichain Sepolia (chain 1301) first.");
+    const box = new ethers.Contract(DEPLOYED.box, BOX_ABI, signer);
+    const tx = await box.deposit({ value: ethers.parseEther(DEPOSIT_ETH) });
+    $("status").textContent = "Deposit sent: " + tx.hash + "\nWaiting for confirmation…";
+    await tx.wait();
+    $("status").textContent = "Deposit confirmed: " + tx.hash +
+      "\nThe reactive contract should pick it up shortly. Refresh status in 1–3 min.";
+  } catch (e) { $("status").textContent = "Deposit failed: " + (e.reason || e.message); }
+};
+refresh();
+</script>
+</body>
+</html>
